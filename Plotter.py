@@ -4,6 +4,7 @@ from PyQt6 import QtWidgets, QtCore, QtGui
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
 from matplotlib.figure import Figure
 from scipy.optimize import curve_fit
+from scipy.signal import find_peaks
 import sys
 
 
@@ -58,30 +59,59 @@ class PlotterWindow(QtWidgets.QMainWindow):
             },
             "Linear: a*x + b": {
                 "params": ["a", "b"],
-                "func": lambda x, p: p[0] * x + p[1],
+                "func": lambda x, a, b: a * x + b,
             },
             "Quadratic: a*x² + b*x + c": {
                 "params": ["a", "b", "c"],
-                "func": lambda x, p: p[0] * x**2 + p[1] * x + p[2],
+                "func": lambda x, a, b, c: a * x**2 + b * x + c,
             },
             "Cubic: a*x³ + b*x² + c*x + d": {
                 "params": ["a", "b", "c", "d"],
-                "func": lambda x, p: p[0] * x**3 + p[1] * x**2 + p[2] * x + p[3],
+                "func": lambda x, a, b, c, d: a * x**3 + b * x**2 + c * x + d,
             },
             "Exponential: a*exp(b*x)": {
                 "params": ["a", "b"],
-                "func": lambda x, p: p[0] * np.exp(p[1] * x),
+                "func": lambda x, a, b: a * np.exp(b * x),
             },
             "Sinus: a*sin(b*x +c)+d":{
                 "params": ["a", "b","c","d"],
-                "func": lambda x, p: p[0] * np.sin((p[1]*x) + p[2]) + p[3],
+                "func": lambda x, a, b, c, d: a * np.sin((b * x) + c) + d,
             },
             "Sinus²: a*sin²(b*x +c)+d":{
                 "params": ["a", "b","c","d"],
-                "func": lambda x, p: p[0] * np.square(np.sin((p[1]*x) + p[2])) + p[3],
+                "func": lambda x, a, b, c, d: a * np.square(np.sin((b * x) + c)) + d,
+            },
+            "Plate: a:α x:β b:I0": {
+                "params": ["a", "b"],
+                "func": lambda x, a, b: b * (
+        (np.cos(a)**2) * (np.cos(2*np.pi*x/360)**2) +
+        (np.sin(a)**2) * (np.sin(2*np.pi*x/360)**2)),
+            },
+            "RLC Serie |Z|(f): a=R b=L c=C": {
+                "params": ["a", "b", "c","d"],
+                "func": self._fit_series_impedance_magnitude,
+            },
+            "RLC Serie φ(f): a=R b=L c=C": {
+                "params": ["a", "b", "c","d"],
+                "func": self._fit_series_phase,
+            },
+            "RLC Parallel1 |Y|(f): a=R b=L c=C": {
+                "params": ["a", "b", "c","d"],
+                "func": self._fit_parallel_first_admittance_magnitude,
+            },
+            "RLC Parallel1 φ(f): a=R b=L c=C": {
+                "params": ["a", "b", "c","d"],
+                "func": self._fit_parallel_first_phase,
+            },
+            "RLC Parallel2 |Y|(f): a=R b=L c=C": {
+                "params": ["a", "b", "c","d"],
+                "func": self._fit_parallel_second_admittance_magnitude,
+            },
+            "RLC Parallel2 φ(f): a=R b=L c=C": {
+                "params": ["a", "b", "c","d"],
+                "func": self._fit_parallel_second_phase,
             },
         }
-
         self._initialize_dataset_settings(self.data_columns)
 
         self._build_ui()
@@ -256,28 +286,38 @@ class PlotterWindow(QtWidgets.QMainWindow):
         self.fit_x_max_edit.editingFinished.connect(self._on_fit_range_edited)
         controls_layout.addWidget(self.fit_x_max_edit, 14, 1, 1, 2)
 
+        controls_layout.addWidget(QtWidgets.QLabel("Exclude X Ranges:"), 15, 0)
+        self.fit_exclude_ranges_edit = QtWidgets.QLineEdit()
+        self.fit_exclude_ranges_edit.setPlaceholderText("e.g. 1200:1300, 1500:1520")
+        self.fit_exclude_ranges_edit.editingFinished.connect(self._on_fit_range_edited)
+        controls_layout.addWidget(self.fit_exclude_ranges_edit, 15, 1, 1, 2)
+
         self.auto_fit_button = QtWidgets.QPushButton("Fit Selected")
         self.auto_fit_button.clicked.connect(self._auto_fit)
-        controls_layout.addWidget(self.auto_fit_button, 15, 0)
+        controls_layout.addWidget(self.auto_fit_button, 16, 0)
 
         self.fit_status = QtWidgets.QLabel("")
-        controls_layout.addWidget(self.fit_status, 15, 1, 1, 2)
+        controls_layout.addWidget(self.fit_status, 16, 1, 1, 2)
 
-        controls_layout.addWidget(QtWidgets.QLabel("Picked Point:"), 16, 0)
+        self.show_peak_distance_checkbox = QtWidgets.QCheckBox("Show inter-peak distances")
+        self.show_peak_distance_checkbox.toggled.connect(self._on_peak_distance_toggle)
+        controls_layout.addWidget(self.show_peak_distance_checkbox, 17, 0, 1, 3)
+
+        controls_layout.addWidget(QtWidgets.QLabel("Picked Point:"), 18, 0)
         self.picked_point_label = QtWidgets.QLabel("none")
-        controls_layout.addWidget(self.picked_point_label, 16, 1, 1, 2)
+        controls_layout.addWidget(self.picked_point_label, 18, 1, 1, 2)
 
         self.add_vline_button = QtWidgets.QPushButton("Add V-Line")
         self.add_vline_button.clicked.connect(self._add_vline_from_selected_point)
-        controls_layout.addWidget(self.add_vline_button, 17, 0)
+        controls_layout.addWidget(self.add_vline_button, 19, 0)
 
         self.add_hline_button = QtWidgets.QPushButton("Add H-Line")
         self.add_hline_button.clicked.connect(self._add_hline_from_selected_point)
-        controls_layout.addWidget(self.add_hline_button, 17, 1, 1, 2)
+        controls_layout.addWidget(self.add_hline_button, 19, 1, 1, 2)
 
         self.clear_lines_button = QtWidgets.QPushButton("Clear Lines")
         self.clear_lines_button.clicked.connect(self._clear_lines)
-        controls_layout.addWidget(self.clear_lines_button, 18, 0, 1, 3)
+        controls_layout.addWidget(self.clear_lines_button, 20, 0, 1, 3)
 
         self.param_labels = []
         self.param_edits = []
@@ -286,12 +326,12 @@ class PlotterWindow(QtWidgets.QMainWindow):
             edit = QtWidgets.QLineEdit()
             edit.setPlaceholderText("0.0")
             edit.editingFinished.connect(self._on_param_edited)
-            controls_layout.addWidget(label, 19 + i, 0)
-            controls_layout.addWidget(edit, 19 + i, 1, 1, 2)
+            controls_layout.addWidget(label, 22 + i, 0)
+            controls_layout.addWidget(edit, 22 + i, 1, 1, 2)
             self.param_labels.append(label)
             self.param_edits.append(edit)
 
-        latex_label_row = 19 + self.max_param_fields
+        latex_label_row = 22 + self.max_param_fields
         controls_layout.addWidget(QtWidgets.QLabel("LaTeX Rows:"), latex_label_row, 0)
         self.copy_latex_button = QtWidgets.QPushButton("Copy LaTeX")
         self.copy_latex_button.clicked.connect(self._copy_latex_output)
@@ -402,6 +442,90 @@ class PlotterWindow(QtWidgets.QMainWindow):
             return float(normalized)
         except ValueError:
             return np.nan
+
+    def _evaluate_fit_function(self, fit_def, x_values, params):
+        param_values = np.asarray(params, dtype=float).reshape(-1)
+        fit_func = fit_def["func"]
+        try:
+            return fit_func(x_values, *param_values)
+        except TypeError:
+            return fit_func(x_values, param_values)
+
+    @staticmethod
+    def _fit_series_impedance_magnitude(x, a, b, c, d):
+        """
+        Series RLC circuit impedance magnitude: |Z| = sqrt(R^2 + (wL - 1/(wC))^2)
+        Parameters: a=R (resistance), b=L (inductance), c=C (capacitance)
+        Input x: frequency in Hz
+        """
+        omega = 2 * np.pi * x
+
+        reactance = (omega * b) - (1.0 / (omega * c))
+        return np.sqrt(a**2 + reactance**2) + d
+
+    @staticmethod
+    def _fit_series_phase(x, a, b, c, d):
+        """
+        Series RLC circuit phase: φ = arctan((wL - 1/(wC)) / R)
+        Parameters: a=R (resistance), b=L (inductance), c=C (capacitance), d=additional parameter
+        Input x: frequency in Hz
+        """
+        omega = 2 * np.pi * x
+
+        reactance = (omega * b) - (1.0 / (omega * c))
+        return np.arctan(reactance / a) + d
+
+    @staticmethod
+    def _fit_parallel_first_admittance_magnitude(x, a, b, c, d):
+        """
+        Parallel RLC circuit admittance magnitude: |Y| = sqrt((1/R)^2 + (wC - 1/(wL))^2)
+        Parameters: a=R (resistance), b=L (inductance), c=C (capacitance), d=additional parameter
+        Input x: frequency in Hz
+        """
+        omega = 2 * np.pi * x
+
+        # Parallel RLC: Y = sqrt((1/R)^2 + (wC - 1/(wL))^2)
+        term = omega * c - 1.0 / (omega * b)
+        return np.sqrt(1.0 / (a**2) + term**2) + d
+
+    @staticmethod
+    def _fit_parallel_first_phase(x, a, b, c, d):
+        """
+        Parallel RLC circuit phase: φ = arctan((wC - 1/(wL)) * R)
+        Parameters: a=R (resistance), b=L (inductance), c=C (capacitance), d=additional parameter
+        Input x: frequency in Hz
+        """
+        omega = 2 * np.pi * x
+
+        # Parallel RLC: φ = arctan((wC - 1/(wL)) * R)
+        return np.arctan((omega * c - 1.0 / (omega * b)) * a) + d
+
+    @staticmethod
+    def _fit_parallel_second_admittance_magnitude(x, a, b, c, d):
+        """
+        Parallel RLC circuit admittance magnitude (alternative formulation): 
+        |Y| = sqrt((1/R)^2 + (wC - 1/(wL))^2)
+        Parameters: a=R (resistance), b=L (inductance), c=C (capacitance), d=additional parameter
+        Input x: frequency in Hz
+        """
+        omega = 2 * np.pi * x
+
+        # Parallel RLC: Y = sqrt((1/R)^2 + (wC - 1/(wL))^2)
+        term = omega * c - 1.0 / (omega * b)
+        return np.sqrt(1.0 / (a**2) + term**2) + d
+
+    @staticmethod
+    def _fit_parallel_second_phase(x, a, b, c, d):
+        """
+        Parallel RLC circuit phase (alternative formulation): φ = arctan((wC - 1/(wL)) * R)
+        Parameters: a=R (resistance), b=L (inductance), c=C (capacitance), d=additional parameter
+        Input x: frequency in Hz
+        """
+        eps = 1e-12
+        omega = 2 * np.pi * x
+
+        # Parallel RLC: φ = arctan((wC - 1/(wL)) * R)
+        return np.arctan((omega * c - 1.0 / (omega * b)) * a) + d
 
     def _get_valid_xy(self, x_col, y_col):
         x, y, _ = self._get_valid_xy_with_rows(x_col, y_col)
@@ -572,8 +696,18 @@ class PlotterWindow(QtWidgets.QMainWindow):
         self._update_plot()
 
     def _on_fit_range_edited(self):
-        self._save_fit_range_to_selected_dataset()
-        self.fit_status.setText("")
+        invalid_tokens = self._save_fit_range_to_selected_dataset()
+        if invalid_tokens:
+            self.fit_status.setText(f"ignored invalid exclude ranges: {', '.join(invalid_tokens)}")
+        else:
+            self.fit_status.setText("")
+        self._update_plot()
+
+    def _on_peak_distance_toggle(self):
+        dataset_name = self.y_axis_columns[0] if self.y_axis_columns else ""
+        if dataset_name == "":
+            return
+        self.dataset_settings[dataset_name]["show_peak_distances"] = self.show_peak_distance_checkbox.isChecked()
         self._update_plot()
 
     def _on_header_name_edited(self, col_name):
@@ -607,7 +741,7 @@ class PlotterWindow(QtWidgets.QMainWindow):
                 if i < len(params) and not np.isnan(params[i]):
                     self.param_edits[i].setText(f"{params[i]:.6g}")
                 elif self.param_edits[i].text().strip() == "":
-                    self.param_edits[i].setText("0.0")
+                    self.param_edits[i].setText("1.0")
             else:
                 self.param_edits[i].clear()
 
@@ -620,20 +754,28 @@ class PlotterWindow(QtWidgets.QMainWindow):
         if dataset_name == "":
             return
 
+        fit_name = self.dataset_settings[dataset_name]["fit_name"]
+        param_count = len(self.fit_definitions[fit_name]["params"])
         params = self.dataset_settings[dataset_name]["params"]
         for i in range(self.max_param_fields):
             value = self._parse_float(self.param_edits[i].text())
-            params[i] = value
+            if i < param_count:
+                params[i] = 1.0 if np.isnan(value) else value
+            else:
+                params[i] = np.nan
 
     def _save_fit_range_to_selected_dataset(self):
         dataset_name = self.y_axis_columns[0] if self.y_axis_columns else ""
         if dataset_name == "":
-            return
+            return []
 
         fit_x_min = self._parse_float(self.fit_x_min_edit.text())
         fit_x_max = self._parse_float(self.fit_x_max_edit.text())
+        exclude_ranges, invalid_tokens = self._parse_exclude_ranges(self.fit_exclude_ranges_edit.text())
         self.dataset_settings[dataset_name]["fit_x_min"] = fit_x_min
         self.dataset_settings[dataset_name]["fit_x_max"] = fit_x_max
+        self.dataset_settings[dataset_name]["fit_exclude_ranges"] = exclude_ranges
+        return invalid_tokens
 
     def _get_fit_bounds(self, dataset_name):
         fit_x_min = self.dataset_settings.get(dataset_name, {}).get("fit_x_min", np.nan)
@@ -644,13 +786,60 @@ class PlotterWindow(QtWidgets.QMainWindow):
 
         return fit_x_min, fit_x_max
 
-    def _get_fit_mask(self, x_values, fit_x_min, fit_x_max):
+    def _get_fit_mask(self, x_values, fit_x_min, fit_x_max, excluded_ranges=None):
         mask = np.ones(len(x_values), dtype=bool)
         if not np.isnan(fit_x_min):
             mask &= x_values >= fit_x_min
         if not np.isnan(fit_x_max):
             mask &= x_values <= fit_x_max
+        for low, high in (excluded_ranges or []):
+            mask &= ~((x_values >= low) & (x_values <= high))
         return mask
+
+    @staticmethod
+    def _parse_exclude_ranges(text):
+        tokens = [token.strip() for token in str(text).replace(";", ",").split(",")]
+        ranges = []
+        invalid_tokens = []
+
+        for token in tokens:
+            if token == "":
+                continue
+
+            split_char = ":" if ":" in token else "-" if "-" in token[1:] else None
+            if split_char is None:
+                invalid_tokens.append(token)
+                continue
+
+            left_text, right_text = token.split(split_char, 1)
+            left = PlotterWindow._parse_float(left_text)
+            right = PlotterWindow._parse_float(right_text)
+            if np.isnan(left) or np.isnan(right):
+                invalid_tokens.append(token)
+                continue
+
+            low, high = (left, right) if left <= right else (right, left)
+            ranges.append((float(low), float(high)))
+
+        if not ranges:
+            return [], invalid_tokens
+
+        ranges.sort(key=lambda item: item[0])
+        merged = [ranges[0]]
+        for low, high in ranges[1:]:
+            prev_low, prev_high = merged[-1]
+            if low <= prev_high:
+                merged[-1] = (prev_low, max(prev_high, high))
+            else:
+                merged.append((low, high))
+
+        return merged, invalid_tokens
+
+    @staticmethod
+    def _format_exclude_ranges(ranges):
+        if not ranges:
+            return ""
+        return ", ".join(f"{low:.6g}:{high:.6g}" for low, high in ranges)
 
     @staticmethod
     def _lighten_color(color_hex, factor=0.55):
@@ -682,7 +871,8 @@ class PlotterWindow(QtWidgets.QMainWindow):
 
         x_all, y_all = self._get_valid_xy(self.x_axis_column, dataset_name)
         fit_x_min, fit_x_max = self._get_fit_bounds(dataset_name)
-        fit_mask = self._get_fit_mask(x_all, fit_x_min, fit_x_max)
+        exclude_ranges = self.dataset_settings[dataset_name].get("fit_exclude_ranges", [])
+        fit_mask = self._get_fit_mask(x_all, fit_x_min, fit_x_max, exclude_ranges)
         x = x_all[fit_mask]
         y = y_all[fit_mask]
 
@@ -690,14 +880,41 @@ class PlotterWindow(QtWidgets.QMainWindow):
             self.fit_status.setText("not enough points inside fit range")
             return
 
+        if fit_name == "Peak Counter":
+            prominence_value = self._parse_float(self.param_edits[1].text())
+            distance_value = self._parse_float(self.param_edits[2].text())
+            prominence = 0.0 if np.isnan(prominence_value) else max(0.0, float(prominence_value))
+            distance = 1 if np.isnan(distance_value) else max(1, int(round(distance_value)))
+
+            peaks, _ = find_peaks(y, prominence=prominence, distance=distance)
+            count = int(len(peaks))
+
+            saved_params = self.dataset_settings[dataset_name]["params"]
+            saved_uncertainties = self.dataset_settings[dataset_name]["param_uncertainties"]
+
+            saved_params[0] = float(count)
+            saved_params[1] = prominence
+            saved_params[2] = float(distance)
+            saved_params[3] = np.nan
+            saved_uncertainties[:] = [np.nan] * self.max_param_fields
+
+            self.param_edits[0].setText(str(count))
+            self.param_edits[1].setText(f"{prominence:.6g}")
+            self.param_edits[2].setText(str(distance))
+            self.param_edits[3].clear()
+
+            self.fit_status.setText(f"peaks found: {count}")
+            self._update_plot()
+            return
+
         try:
             initial_params = []
             for i in range(len(fit_def["params"])):
                 value = self._parse_float(self.param_edits[i].text())
-                initial_params.append(0.0 if np.isnan(value) else value)
+                initial_params.append(1.0 if np.isnan(value) else value)
 
             params, pcov = curve_fit(
-                fit_def["func"],
+                lambda x_data, *fit_params: self._evaluate_fit_function(fit_def, x_data, fit_params),
                 x,
                 y,
                 p0=initial_params,
@@ -717,8 +934,12 @@ class PlotterWindow(QtWidgets.QMainWindow):
                 self.param_edits[i].setText(f"{value:.6g}")
                 saved_uncertainties[i] = uncertainties[i]
             self.fit_status.setText(f"fit ok: {dataset_name}")
-        except ValueError as exc:
-            self.fit_status.setText(str(exc))
+        except Exception as exc:
+            error_msg = str(exc)
+            # Truncate long error messages
+            if len(error_msg) > 100:
+                error_msg = error_msg[:97] + "..."
+            self.fit_status.setText(f"fit failed: {error_msg}")
 
         self._update_plot()
 
@@ -884,7 +1105,8 @@ class PlotterWindow(QtWidgets.QMainWindow):
                     x_plot = np.deg2rad(x) if is_polar and self.polar_theta_unit == "Degrees" else x
 
                     fit_x_min, fit_x_max = self._get_fit_bounds(y_col)
-                    fit_mask = self._get_fit_mask(x, fit_x_min, fit_x_max)
+                    fit_exclude_ranges = self.dataset_settings[y_col].get("fit_exclude_ranges", [])
+                    fit_mask = self._get_fit_mask(x, fit_x_min, fit_x_max, fit_exclude_ranges)
                     outside_mask = ~fit_mask
 
                     if np.any(outside_mask):
@@ -909,7 +1131,7 @@ class PlotterWindow(QtWidgets.QMainWindow):
                                     yerr=yerr_outside,
                                     fmt="none",
                                     ecolor=excluded_color,
-                                    alpha=0.7,
+                                    alpha=1,
                                     elinewidth=1.2,
                                     capsize=3,
                                 )
@@ -936,7 +1158,7 @@ class PlotterWindow(QtWidgets.QMainWindow):
                                     yerr=yerr_fit,
                                     fmt="none",
                                     ecolor=color,
-                                    alpha=0.7,
+                                    alpha=1,
                                     elinewidth=1.2,
                                     capsize=3,
                                 )
@@ -950,13 +1172,52 @@ class PlotterWindow(QtWidgets.QMainWindow):
                                 params = self._read_fit_params(y_col)
                                 x_for_fit = x[fit_mask]
                                 y_for_fit = y[fit_mask]
-                                x_fit = np.linspace(np.min(x_for_fit), np.max(x_for_fit), 500)
-                                y_fit = fit_def["func"](x_fit, params)
-                                x_fit_plot = np.deg2rad(x_fit) if is_polar and self.polar_theta_unit == "Degrees" else x_fit
-                                self.ax.plot(x_fit_plot, y_fit, color=color, linewidth=2.0, linestyle="--", label=f"{display_name} fit")
+                                if fit_name != "Peak Counter":
+                                    x_fit = np.linspace(np.min(x), np.max(x), 1000)
+                                    y_fit = self._evaluate_fit_function(fit_def, x_fit, params)
+                                    x_fit_plot = np.deg2rad(x_fit) if is_polar and self.polar_theta_unit == "Degrees" else x_fit
+                                    self.ax.plot(x_fit_plot, y_fit, color=color, linewidth=2.0, linestyle="--", label=f"{display_name} fit")
+                                else:
+                                    prominence = max(0.0, float(params[1]))
+                                    distance = max(1, int(round(params[2])))
+                                    peaks, _ = find_peaks(y_for_fit, prominence=prominence, distance=distance)
+                                    if len(peaks) > 0:
+                                        peak_color = "#d62728"
+                                        x_peaks = x_for_fit[peaks]
+                                        x_peaks_plot = np.deg2rad(x_peaks) if is_polar and self.polar_theta_unit == "Degrees" else x_peaks
+                                        peak_scatter = self.ax.scatter(
+                                            x_peaks_plot,
+                                            y_for_fit[peaks],
+                                            color=peak_color,
+                                            s=90,
+                                            marker="o",
+                                            label=f"{display_name} counted peaks",
+                                            zorder=7,
+                                        )
+                                        self.scatter_row_lookup[peak_scatter] = (y_col, row_indices[fit_mask][peaks])
+
+                                        show_peak_distances = self.dataset_settings[y_col].get("show_peak_distances", False)
+                                        if show_peak_distances and len(x_peaks) > 1:
+                                            x_midpoints = 0.5 * (x_peaks[:-1] + x_peaks[1:])
+                                            peak_distances = np.diff(x_peaks)
+                                            x_midpoints_plot = np.deg2rad(x_midpoints) if is_polar and self.polar_theta_unit == "Degrees" else x_midpoints
+                                            self.ax.scatter(
+                                                x_midpoints_plot,
+                                                peak_distances,
+                                                color="#2ca02c",
+                                                s=70,
+                                                marker="D",
+                                                label=f"{display_name} peak distances",
+                                                zorder=8,
+                                            )
 
                                 fit_text_lines = [fit_name]
-                                if fit_name == "Linear: a*x + b":
+                                if fit_name == "Peak Counter":
+                                    fit_text_lines.append(f"count = {int(round(params[0]))}")
+                                    fit_text_lines.append(f"prominence ≥ {params[1]:.3g}")
+                                    fit_text_lines.append(f"distance ≥ {int(round(params[2]))} samples")
+                                    param_lines = []
+                                elif fit_name == "Linear: a*x + b":
                                     param_names = self.fit_definitions[fit_name]["params"]
                                     uncertainties = self.dataset_settings[y_col].get("param_uncertainties", [np.nan] * self.max_param_fields)
                                     param_lines = []
@@ -972,7 +1233,7 @@ class PlotterWindow(QtWidgets.QMainWindow):
                                         f"{name} = {value:.3g}"
                                         for name, value in zip(param_names, params)
                                     ]
-                                    y_pred = fit_def["func"](x_for_fit, params)
+                                    y_pred = self._evaluate_fit_function(fit_def, x_for_fit, params)
                                     residuals = y_for_fit - y_pred
                                     ss_res = np.sum(residuals**2)
                                     ss_tot = np.sum((y_for_fit - np.mean(y_for_fit))**2)
@@ -989,16 +1250,16 @@ class PlotterWindow(QtWidgets.QMainWindow):
                                     ha="left",
                                     fontsize=16,
                                     fontweight="bold",
-                                    bbox=dict(boxstyle="round", facecolor="white", alpha=0.8, edgecolor=color),
+                                    bbox=dict(boxstyle="round", facecolor="white", alpha=1, edgecolor=color),
                                 )
-                            except (ValueError, RuntimeError):
-                                pass
+                            except (ValueError, RuntimeError, FloatingPointError, OverflowError, ZeroDivisionError) as exc:
+                                self.fit_status.setText(f"fit/plot error: {exc}")
 
         if not is_polar:
             for line in self.guide_lines:
                 value = line["value"]
                 if line["orientation"] == "v":
-                    self.ax.axvline(value, linestyle=":", linewidth=2, alpha=0.9)
+                    self.ax.axvline(value, linestyle=":", linewidth=2, alpha=1)
                     self.ax.text(
                         value,
                         0.98,
@@ -1010,7 +1271,7 @@ class PlotterWindow(QtWidgets.QMainWindow):
                         fontsize=12
                     )
                 else:
-                    self.ax.axhline(value, linestyle=":", linewidth=2, alpha=0.9)
+                    self.ax.axhline(value, linestyle=":", linewidth=2, alpha=1)
                     self.ax.text(
                         0.98,
                         value,
@@ -1099,6 +1360,8 @@ class PlotterWindow(QtWidgets.QMainWindow):
         self.dataset_settings[dataset_name]["param_uncertainties"] = [np.nan] * self.max_param_fields
         self.dataset_settings[dataset_name]["fit_x_min"] = np.nan
         self.dataset_settings[dataset_name]["fit_x_max"] = np.nan
+        self.dataset_settings[dataset_name]["fit_exclude_ranges"] = []
+        self.dataset_settings[dataset_name]["show_peak_distances"] = False
 
         self.fit_status.setText("")
         self._load_selected_dataset_controls()
@@ -1122,11 +1385,15 @@ class PlotterWindow(QtWidgets.QMainWindow):
                     "param_uncertainties": [np.nan] * self.max_param_fields,
                     "fit_x_min": np.nan,
                     "fit_x_max": np.nan,
+                    "fit_exclude_ranges": [],
+                    "show_peak_distances": False,
                 }
             else:
                 self.dataset_settings[name].setdefault("param_uncertainties", [np.nan] * self.max_param_fields)
                 self.dataset_settings[name].setdefault("fit_x_min", np.nan)
                 self.dataset_settings[name].setdefault("fit_x_max", np.nan)
+                self.dataset_settings[name].setdefault("fit_exclude_ranges", [])
+                self.dataset_settings[name].setdefault("show_peak_distances", False)
 
     def _refresh_color_button(self):
         dataset_name = self.y_axis_columns[0] if self.y_axis_columns else ""
@@ -1146,10 +1413,16 @@ class PlotterWindow(QtWidgets.QMainWindow):
         self.auto_fit_button.setEnabled(controls_enabled)
         self.fit_x_min_edit.setEnabled(controls_enabled)
         self.fit_x_max_edit.setEnabled(controls_enabled)
+        self.fit_exclude_ranges_edit.setEnabled(controls_enabled)
+        self.show_peak_distance_checkbox.setEnabled(controls_enabled)
 
         if not controls_enabled:
             self.fit_x_min_edit.clear()
             self.fit_x_max_edit.clear()
+            self.fit_exclude_ranges_edit.clear()
+            self.show_peak_distance_checkbox.blockSignals(True)
+            self.show_peak_distance_checkbox.setChecked(False)
+            self.show_peak_distance_checkbox.blockSignals(False)
             self._refresh_color_button()
             return
 
@@ -1160,8 +1433,14 @@ class PlotterWindow(QtWidgets.QMainWindow):
 
         fit_x_min = setting.get("fit_x_min", np.nan)
         fit_x_max = setting.get("fit_x_max", np.nan)
+        fit_exclude_ranges = setting.get("fit_exclude_ranges", [])
+        show_peak_distances = setting.get("show_peak_distances", False)
         self.fit_x_min_edit.setText("" if np.isnan(fit_x_min) else f" {fit_x_min:.6g}")
         self.fit_x_max_edit.setText("" if np.isnan(fit_x_max) else f"{fit_x_max:.6g}")
+        self.fit_exclude_ranges_edit.setText(self._format_exclude_ranges(fit_exclude_ranges))
+        self.show_peak_distance_checkbox.blockSignals(True)
+        self.show_peak_distance_checkbox.setChecked(show_peak_distances)
+        self.show_peak_distance_checkbox.blockSignals(False)
 
         self._refresh_color_button()
         self._update_param_fields()
@@ -1198,24 +1477,62 @@ class PlotterWindow(QtWidgets.QMainWindow):
         self._update_plot()
 
     def _import_csv(self):
+        options_dialog = QtWidgets.QDialog(self)
+        options_dialog.setWindowTitle("Import Options")
+        dialog_layout = QtWidgets.QFormLayout(options_dialog)
+
+        separator_combo = QtWidgets.QComboBox()
+        separator_combo.addItem("Tab", "\t")
+        separator_combo.addItem("Comma (,)", ",")
+        separator_combo.addItem("Point (.)", ".")
+        separator_combo.addItem("Semicolon (;)", ";")
+        separator_combo.setCurrentIndex(0)
+
+        decimal_combo = QtWidgets.QComboBox()
+        decimal_combo.addItem("Point (.)", ".")
+        decimal_combo.addItem("Comma (,)", ",")
+        decimal_combo.setCurrentIndex(0)
+
+        dialog_layout.addRow("Separator:", separator_combo)
+        dialog_layout.addRow("Decimal symbol:", decimal_combo)
+
+        dialog_buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.StandardButton.Ok
+            | QtWidgets.QDialogButtonBox.StandardButton.Cancel
+        )
+        dialog_buttons.accepted.connect(options_dialog.accept)
+        dialog_buttons.rejected.connect(options_dialog.reject)
+        dialog_layout.addWidget(dialog_buttons)
+
+        if options_dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+
+        selected_separator = separator_combo.currentData()
+        selected_decimal = decimal_combo.currentData()
+
         file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
             self,
-            "Import TXT",
+            "Import CSV/TXT",
             "",
-            "Text files (*.txt);; All files (*)",
+            "CSV/TXT files (*.csv *.txt);;CSV files (*.csv);;Text files (*.txt);;All files (*)",
         )
 
         if file_path == "":
             return
 
         try:
-            imported = pd.read_csv(file_path)
+            imported = pd.read_csv(
+                file_path,
+                sep=selected_separator,
+                decimal=selected_decimal,
+                comment='#',
+            )
         except Exception as exc:
-            QtWidgets.QMessageBox.warning(self, "TXT import", f"Could not read TXT:\n{exc}")
+            QtWidgets.QMessageBox.warning(self, "CSV/TXT import", f"Could not read file:\n{exc}")
             return
 
         if imported.shape[1] == 0:
-            QtWidgets.QMessageBox.warning(self, "TXT import", "TXT has no columns.")
+            QtWidgets.QMessageBox.warning(self, "CSV/TXT import", "Imported file has no columns.")
             return
 
         columns = []
@@ -1247,11 +1564,44 @@ class PlotterWindow(QtWidgets.QMainWindow):
         rename_map = {col_name: self._get_column_display_name(col_name) for col_name in self.data_columns}
         export_df = export_df.rename(columns=rename_map)
 
+        options_dialog = QtWidgets.QDialog(self)
+        options_dialog.setWindowTitle("Export Options")
+        dialog_layout = QtWidgets.QFormLayout(options_dialog)
+
+        separator_combo = QtWidgets.QComboBox()
+        separator_combo.addItem("Tab", "\t")
+        separator_combo.addItem("Comma (,)", ",")
+        separator_combo.addItem("Point (.)", ".")
+        separator_combo.addItem("Semicolon (;)", ";")
+        separator_combo.setCurrentIndex(0)
+
+        decimal_combo = QtWidgets.QComboBox()
+        decimal_combo.addItem("Point (.)", ".")
+        decimal_combo.addItem("Comma (,)", ",")
+        decimal_combo.setCurrentIndex(0)
+
+        dialog_layout.addRow("Separator:", separator_combo)
+        dialog_layout.addRow("Decimal symbol:", decimal_combo)
+
+        dialog_buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.StandardButton.Ok
+            | QtWidgets.QDialogButtonBox.StandardButton.Cancel
+        )
+        dialog_buttons.accepted.connect(options_dialog.accept)
+        dialog_buttons.rejected.connect(options_dialog.reject)
+        dialog_layout.addWidget(dialog_buttons)
+
+        if options_dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+
+        selected_separator = separator_combo.currentData()
+        selected_decimal = decimal_combo.currentData()
+
         file_path, selected_filter = QtWidgets.QFileDialog.getSaveFileName(
             self,
             "Save Data",
             "",
-            "Text files (*.txt);;All files (*)",
+            "CSV files (*.csv);;Text files (*.txt);;All files (*)",
         )
 
         if file_path == "":
@@ -1274,10 +1624,13 @@ class PlotterWindow(QtWidgets.QMainWindow):
             is_csv = True
 
         try:
-            if is_txt:
-                export_df.to_csv(file_path, sep="\t", index=False, na_rep="")
-            else:
-                export_df.to_csv(file_path, sep=",", index=False, na_rep="")
+            export_df.to_csv(
+                file_path,
+                sep=selected_separator,
+                decimal=selected_decimal,
+                index=False,
+                na_rep="",
+            )
             QtWidgets.QMessageBox.information(self, "Save Data", f"Saved:\n{file_path}")
         except Exception as exc:
             QtWidgets.QMessageBox.warning(self, "Save Data", f"Could not save file:\n{exc}")
@@ -1342,8 +1695,11 @@ class PlotterWindow(QtWidgets.QMainWindow):
                 "color": self.default_colors[len(self.data_columns) - 1 % len(self.default_colors)],
                 "fit_name": "None",
                 "params": [np.nan] * self.max_param_fields,
+                "param_uncertainties": [np.nan] * self.max_param_fields,
                 "fit_x_min": np.nan,
                 "fit_x_max": np.nan,
+                "fit_exclude_ranges": [],
+                "show_peak_distances": False,
             }
             self._build_data_grid_header_row()
         
